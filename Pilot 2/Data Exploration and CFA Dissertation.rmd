@@ -1,0 +1,418 @@
+---
+title: "Data Exploration and CFA Dissertation"
+author: "Elijah Meyer"
+date: "7/9/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages , include = FALSE}
+library(likert) 
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(readr)
+library(lubridate)
+library(stringr)
+library(lavaan)
+library(corrplot)
+library(semPlot)
+library(knitr)
+library(forcats)
+library(psych)
+library(MBESS)
+library(kableExtra)
+```
+
+```{r data-cleaning}
+Data <- Data[-33,] #Remove participant outside of population 
+
+Data.Final <- Data %>% 
+  mutate_all(na_if,"") %>% #Turn all missing observations to NA
+  filter(Q7 != "NA" & Q7 != "This is a test") %>% #Remove all participants that 
+                                                  #were excluded from population + my test completion 
+  filter(!row_number() %in% c(1, 2)) %>%  #Remove additional info from Qualtrics
+  dplyr::select(-c(1:23, 56:63)) %>% #Select columns that represent answers to items
+  na.omit() %>%  #Remove incomplete Cases
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+
+
+### Item Key ### 
+##ER - Pressure | Rewards 
+# Pressure Questions - 1; 3; 4; 6; 8
+# Reward Questions - 2; 5; 7; 9
+
+#Rename Questions to match intended construct 
+Data.Final <- Data.Final %>%  
+  rename(PR1 = ER1, 
+         RW1 = ER2,
+         PR2 = ER3, 
+         PR3 = ER4, 
+         RW2 = ER5,
+         PR4 = ER6, 
+         RW3 = ER7,
+         PR5 = ER8,
+         RW4 = ER9) %>% 
+  mutate(Subject = seq(1,length(IM1))) #Create subject column 
+
+### Summary Table 
+Data.Final.Table <- Data.Final %>% 
+  dplyr::select(order(colnames(Data.Final))) %>% #Order Columns by alpha
+  dplyr::select(-c(Subject)) #Remove subject column
+
+
+#lvls <- unique(unlist(Data.Final.Table))
+lvls <- factor(c("Strongly agree", "Agree", "Slightly agree" , "Slightly disagree" , "Disagree" , "Strongly disagree"))
+
+
+# apply the summation per value 
+freq <- sapply(Data.Final.Table, 
+               function(x) table(factor(x, levels = lvls, 
+                                        ordered = TRUE)))
+print (freq/length(Data.Final.Table[,1]))
+
+zero.table <- print (freq/length(Data.Final.Table[,1]))
+
+#Count of selections that had 0 responses by item for our data
+abs(colSums(zero.table != 0) - 6)
+ 
+```
+
+```{r}
+####### For CFA Model ####### 
+
+Data.Final[Data.Final == "Strongly disagree"] <- 1
+Data.Final[Data.Final == "Disagree"] <- 2
+Data.Final[Data.Final == "Slightly disagree"] <- 3
+Data.Final[Data.Final == "Slightly agree"] <- 4
+Data.Final[Data.Final == "Agree"] <- 5
+Data.Final[Data.Final == "Strongly agree"] <- 6
+
+#Data.Final <- as.data.frame(apply(Data.Final, 2, as.numeric))
+
+# Questions by Construct 
+
+#Create index of IM Questions
+index.IM <- grepl('IM', colnames(Data.Final))
+#Subset data to only include IM Questions 
+IM.Q <- Data.Final[index.IM]
+#Create index of IR Questions
+index.IR <- grepl('IR', colnames(Data.Final))
+#Subset data to only include IR Questions
+IR.Q <- Data.Final[index.IR]
+#Create index of External Regulation Questions
+index.RW <- grepl('RW', colnames(Data.Final))
+index.PR <- grepl('PR' , colnames(Data.Final))
+#Subset data into External Regulation Questions
+EM.RW <- Data.Final[index.RW]
+EM.PR <- Data.Final[index.PR]
+#Create index of Amotivation Questions
+index.AM <- grepl('AM', colnames(Data.Final))
+#Subset data into Amotivation Questions
+AM.Q <- Data.Final[index.AM]
+
+#mean(abs(colMeans(IM.Q)))
+IM.Q <- data.frame(IM.Q)
+mean(sapply(IM.Q[,1:8], sd))
+
+#mean(abs(colMeans(IR.Q)))
+IR.Q <- data.frame(IR.Q)
+mean(sapply(IR.Q[,1:8], sd))
+
+#mean(abs(colMeans(EM.RW)))
+EM.RW <- data.frame(EM.RW)
+mean(sapply(EM.RW[,1:4], sd))
+
+#mean(abs(colMeans(EM.PR)))
+EM.PR <- data.frame(EM.PR)
+mean(sapply(EM.PR[,1:5], sd))
+
+#mean(abs(colMeans(AM.Q)))
+AM.Q <- data.frame(AM.Q)
+mean(sapply(AM.Q[,1:7], sd))
+```
+
+```{r cor-plot}
+
+#Corr Matrix with one participant removed due to not being a part of our population
+
+Data.Final[] <- lapply(Data.Final, function(x) as.numeric(as.character(x)))
+
+Data.Final %>% dplyr::select(-Subject) %>% dplyr::select(order(colnames(Data.Final[,-33]))) %>% 
+  cor() %>% corrplot(type = "upper")
+
+cor(Data.Final)
+
+#Comparison of spearman vs pearson
+round(cor(Data.Final[-33,c(1:32)], method = "spearman") - cor(Data.Final[-33,c(1:32)] , method = "pearson"),2)
+
+```
+
+```{r cfa-model}
+## Fits the lavaan CFA model with correlated latent factors and uncorrelated items 
+
+model3 = ' 
+
+fAM =~ NA*AM1 + AM2 + AM3 + AM4 + AM5 + AM7 + AM8
+fReward =~ NA*RW2 + RW1 + RW3 + RW4
+fPressure =~ NA*PR1 + PR2 + PR3 + PR4 + PR5
+fIR =~ NA*IR1 + IR3 + IR5 + IR7 + IR8 + IR9 + IR10 + IR11
+fIM =~ NA*IM1 + IM2 + IM3 + IM4 + IM5 + IM6 + IM7 + IM8
+fAM ~~ 1*fAM
+fReward ~~ 1*fReward
+fPressure ~~ 1*fPressure
+fIR ~~ 1*fIR
+fIM ~~ 1*fIM
+
+'
+
+
+
+  
+```
+
+```{r}
+
+out = cfa(model3, data = Data.Final, orthogonal = FALSE)
+#Estimates change when you save it.... 
+summary(out, fit.measures = TRUE, standardized = TRUE)
+
+#visually what was being fit
+semPaths(out)
+
+summary(out, fit.measures = TRUE, standardized = TRUE)
+
+
+#Omega Calculations from SEM to assess evidence of reliability 
+ci.reliability(IM.Q, interval.type = "mlr")
+ci.reliability(IR.Q, interval.type = "mlr")
+ci.reliability(EM.RW, interval.type = "mlr")
+ci.reliability(EM.PR, interval.type = "mlr")
+ci.reliability(AM.Q, interval.type = "mlr")
+
+```
+
+```{r}
+Data.Final.IM2 <- Data %>% 
+  mutate_all(na_if,"") %>% #Turn all missing observations to NA
+  filter(Q7 != "NA" & Q7 != "This is a test") %>% #Remove all participants that were excluded from population + my test completion 
+  filter(!row_number() %in% c(1, 2)) %>%  #Remove additional info from Qualtrics
+  select(-c(1:19, 21:23, 56:63)) %>% #Select columns that represent answers to items
+  na.omit() %>%  #Remove incomplete Cases
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+#Rename Questions to match intended construct 
+Data.Final.IM2 <- Data.Final.IM2 %>%  
+  rename(PR1 = ER1, 
+         RW1 = ER2,
+         PR2 = ER3, 
+         PR3 = ER4, 
+         RW2 = ER5,
+         PR4 = ER6, 
+         RW3 = ER7,
+         PR5 = ER8,
+         RW4 = ER9) %>% 
+  mutate(Subject = seq(1,length(IM1))) #Create subject column 
+
+#Data for newer faculty 
+NF <- Data.Final.IM2 %>%  
+  select(Q2 , IM2) %>% 
+  group_by(Q2) %>% 
+  filter(Q2 == "No") %>% 
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+GSI <- Data.Final.IM2 %>%  
+  select(Q2 , IM2) %>% 
+  group_by(Q2) %>% 
+  filter(Q2 == "Yes - I am a graduate student") %>% 
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+lvls <- factor(c("Strongly agree", "Agree", "Slightly agree" , "Slightly disagree" , "Disagree" , "Strongly disagree"))
+
+# apply the summation per value 
+freq2 <- sapply(NF, 
+               function(x) table(factor(x, levels = lvls, 
+                                        ordered = TRUE)))
+
+freq3 <- sapply(GSI, 
+               function(x) table(factor(x, levels = lvls, 
+                                        ordered = TRUE)))
+table.up <- print (freq2/31)
+table.up <- data.frame(table.up)
+library(flextable)
+
+table.up %>% regulartable()
+
+
+dim(NF)[1]
+print (freq3/27)
+dim(GSI)[1]
+```
+
+```{r}
+#Data for newer faculty 
+NF <- Data.Final.IM2 %>%  
+  group_by(Q2) %>% 
+  filter(Q2 == "No") %>% 
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+GSI <- Data.Final.IM2 %>%  
+  group_by(Q2) %>% 
+  filter(Q2 == "Yes - I am a graduate student") %>% 
+  mutate(across(where(is.character), str_trim)) #Clean up white space 
+
+lvls <- factor(c("Strongly agree", "Agree", "Slightly agree" , "Slightly disagree" , "Disagree" , "Strongly disagree"))
+
+# apply the summation per value 
+freqallNF <- sapply(NF, 
+               function(x) table(factor(x, levels = lvls, 
+                                        ordered = TRUE)))
+
+freqallGSI <- sapply(GSI, 
+               function(x) table(factor(x, levels = lvls, 
+                                        ordered = TRUE)))
+a <- print (freqallNF/30)
+dim(NF)[1]
+b <- print (freqallGSI/28)
+dim(GSI)[1]
+
+b %>% data.frame(b) %>% regulartable()
+
+
+a <- as.data.frame(a)
+b <- as.data.frame(b)
+p <- b-a
+
+# Line Graph for Difference in Prop of Responses (GSI - Newer Faculty (non-GSI))
+p %>%
+  dplyr::select(-Q2, -Subject) %>%
+  mutate(resp_level = c("Strongly agree", "Agree", "Slightly agree", "Slightly disagree", "Disagree", "Strongly disagree")) %>%
+  as_tibble %>%
+  dplyr::select(sort(names(.))) %>%
+  dplyr::select(resp_level, everything()) %>%
+  pivot_longer(AM1:RW4, names_to = "item", values_to = "resp") %>%
+  mutate(
+    construct = stringr::str_sub(item, 1, 2)
+  ) %>%
+  mutate(
+    item_number = sapply(item, function(x) stringr::str_sub(x, start = 3, end = nchar(x))) 
+  ) %>%
+  mutate(
+    item_number_factor = factor(item_number, levels = 1:11)
+  ) %>%
+  ggplot() +
+  geom_line(aes(x = item_number_factor, y = resp, col = resp_level, group = resp_level)) +
+  geom_point(aes(x = item_number_factor, y = resp, col = resp_level, group = resp_level)) +
+  facet_wrap(~ construct, scales = "free", nrow = 5) +
+  theme_bw() +
+  geom_hline(
+    data = tibble(
+      construct = c("AM", "IM", "IR", "PR", "RW")
+    ),
+    aes(yintercept = 0), 
+    linetype = "dotdash", alpha = .5
+  ) +
+  labs(
+    y = "Difference in response (GSI - Faculty)",
+    x = "Item number",
+    color = "Response level"
+  )
+
+```
+
+```{r}
+##His of responses by construct 
+
+fixed_data <- Data.Final %>%
+  as_tibble %>%
+  dplyr::select(sort(names(.))) %>%
+  dplyr::select(-Subject) %>%
+  pivot_longer(AM1:RW4, names_to = "item", values_to = "resp") %>%
+  mutate(
+    construct = stringr::str_sub(item, 1, 2)
+  ) %>%
+  mutate(
+    item_number = sapply(item, function(x) stringr::str_sub(x, start = 3, end = nchar(x))) 
+  ) %>%
+  mutate(
+    item_number_factor = factor(item_number, levels = 1:11)
+  ) %>%
+  mutate(
+    resp_text = case_when(
+      resp == 1 ~ "Strongly disagree",
+      resp == 2 ~ "Disagree",
+      resp == 3 ~ "Slightly disagree",
+      resp == 4 ~ "Slightly agree",
+      resp == 5 ~ "Agree",
+      resp == 6 ~ "Strongly agree", 
+      TRUE ~ "whoops lol"
+    )
+  ) %>%
+  mutate(resp_text = factor(resp_text, levels = c("Strongly disagree", "Disagree", "Slightly disagree", "Slightly agree", "Agree", "Strongly agree")))
+  
+p1 <- fixed_data %>%
+  filter(construct == "AM") %>%
+  ggplot() + 
+  geom_bar(aes(x = resp_text)) +
+  facet_grid(item_number_factor ~ construct) +
+  theme_bw() +
+  labs(
+    x = ""
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 <- fixed_data %>%
+  filter(construct == "IM") %>%
+  ggplot() + 
+  geom_bar(aes(x = resp_text)) +
+  facet_grid(item_number_factor ~ construct) +
+  theme_bw() +
+  labs(
+    x = "",
+    y = ""
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p3 <- fixed_data %>%
+  filter(construct == "IR") %>%
+  ggplot() + 
+  geom_bar(aes(x = resp_text)) +
+  facet_grid(item_number_factor ~ construct) +
+  theme_bw() +
+  labs(
+    y = "",
+    x = "Response"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4 <- fixed_data %>%
+  filter(construct == "PR") %>%
+  ggplot() + 
+  geom_bar(aes(x = resp_text)) +
+  facet_grid(item_number_factor ~ construct) +
+  theme_bw() +
+  labs(
+    x = "",
+    y = ""
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p5 <- fixed_data %>%
+  filter(construct == "RW") %>%
+  ggplot() + 
+  geom_bar(aes(x = resp_text)) +
+  facet_grid(item_number_factor ~ construct) +
+  theme_bw() +
+  labs(
+    y = "",
+    x = ""
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+gridExtra::grid.arrange(p1, p5, p4, p3, p2, ncol = 5)
+```
+
